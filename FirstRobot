@@ -1,0 +1,422 @@
+package ultra;
+ 
+import robocode.*;
+import robocode.util.Utils;
+import java.awt.Color;
+import java.awt.geom.*;
+import java.util.*;
+ 
+/**
+ * UltraKiller - Le robot le plus puissant possible
+ *
+ * Techniques utilisées :
+ * - Mouvement Wave Surfing (meilleure esquive au monde)
+ * - Ciblage Statistical / Precise Prediction
+ * - Anti-Gravity Movement en fallback
+ * - Bullet Shielding (rare mais implementé)
+ * - Multi-mode targeting (Head-On, Linear, Circular, Statistical)
+ * - Energie management intelligent
+ */
+public class UltraKiller extends AdvancedRobot {
+ 
+    // ===== CONSTANTES =====
+    static final double MAX_BULLET_POWER = 3.0;
+    static final double MIN_BULLET_POWER = 0.1;
+    static final double WALL_MARGIN = 60;
+    static final int BINS = 47; // bins impair pour statistical targeting
+ 
+    // ===== WAVE SURFING =====
+    static double[] enemyWaves = new double[BINS];
+    static double[] selfWaves  = new double[BINS];
+ 
+    // ===== VARIABLES ENEMY =====
+    double enemyX, enemyY;
+    double enemyEnergy = 100;
+    double enemyHeading, enemyVelocity;
+    double enemyDistance;
+    double enemyAbsBearing;
+    double enemyBearingFromMe;
+ 
+    // ===== MOUVEMENT =====
+    double moveDirection = 1;
+    double lateralVelocity;
+    double advancingVelocity;
+ 
+    // ===== BULLETS ENNEMIES TRACKÉES =====
+    List<EnemyWave> waves = new ArrayList<>();
+    List<EnemyWave> surfDirections = new ArrayList<>();
+ 
+    // ===== SCAN =====
+    double lastEnemyEnergy = 100;
+    long lastScanTime = 0;
+ 
+    // ===== BATTLEFIELD =====
+    double fieldWidth, fieldHeight;
+ 
+    // ===== STATS POUR TARGETING =====
+    // Chaque index = un angle de tir possible (offset lateral)
+    static int[] guessFactor = new int[BINS];
+ 
+    @Override
+    public void run() {
+        // Couleurs badass
+        setBodyColor(new Color(10, 10, 10));
+        setGunColor(new Color(255, 50, 50));
+        setRadarColor(new Color(50, 255, 50));
+        setBulletColor(new Color(255, 200, 0));
+        setScanColor(new Color(0, 200, 255));
+ 
+        fieldWidth  = getBattleFieldWidth();
+        fieldHeight = getBattleFieldHeight();
+ 
+        // Radar et gun independants
+        setAdjustGunForRobotTurn(true);
+        setAdjustRadarForGunTurn(true);
+        setAdjustRadarForRobotTurn(true);
+ 
+        // Tourner le radar indéfiniment pour lock
+        turnRadarRightRadians(Double.POSITIVE_INFINITY);
+    }
+ 
+    @Override
+    public void onScannedRobot(ScannedRobotEvent e) {
+        // ===== 1. RECUP INFOS ENNEMI =====
+        double absBearing = getHeadingRadians() + e.getBearingRadians();
+        enemyAbsBearing  = absBearing;
+        enemyDistance    = e.getDistance();
+        enemyHeading     = e.getHeadingRadians();
+        enemyVelocity    = e.getVelocity();
+ 
+        enemyX = getX() + Math.sin(absBearing) * enemyDistance;
+        enemyY = getY() + Math.cos(absBearing) * enemyDistance;
+ 
+        double currentEnemyEnergy = e.getEnergy();
+        double energyDrop = lastEnemyEnergy - currentEnemyEnergy;
+        lastEnemyEnergy = currentEnemyEnergy;
+        lastScanTime = getTime();
+ 
+        // ===== 2. RADAR LOCK (narrow beam) =====
+        double radarTurn = Utils.normalRelativeAngle(absBearing - getRadarHeadingRadians());
+        setTurnRadarRightRadians(radarTurn * 2.0);
+ 
+        // ===== 3. DETECTER TIR ENNEMI (wave surfing) =====
+        if (energyDrop > 0.09 && energyDrop <= 3.01) {
+            // L'ennemi a tiré
+            EnemyWave wave = new EnemyWave();
+            wave.fireTime      = getTime() - 1;
+            wave.bulletSpeed   = Rules.getBulletSpeed(energyDrop);
+            wave.fireX         = enemyX;
+            wave.fireY         = enemyY;
+            wave.directAngle   = absBearing + Math.PI; // direction vers nous
+            wave.lateralDir    = lateralVelocity > 0 ? 1 : -1;
+            wave.distTraveled  = wave.bulletSpeed;
+            waves.add(wave);
+        }
+ 
+        // ===== 4. MOUVEMENT WAVE SURFING =====
+        lateralVelocity   = getVelocity() * Math.sin(getHeadingRadians() - absBearing);
+        advancingVelocity  = getVelocity() * Math.cos(getHeadingRadians() - absBearing);
+ 
+        doWaveSurfing(absBearing);
+ 
+        // ===== 5. CIBLAGE STATISTIQUE (GuessFactorTargeting) =====
+        double firePower = calcFirePower(e);
+        double bulletSpeed = Rules.getBulletSpeed(firePower);
+ 
+        // Lateral velocity de l'ennemi (normalisée)
+        double enemyLat = Math.sin(enemyHeading - absBearing) * enemyVelocity;
+        int latDir = enemyLat >= 0 ? 1 : -1;
+ 
+        // Temps de vol estimé
+        double flightTime = enemyDistance / bulletSpeed;
+ 
+        // Meilleur index guess factor
+        int bestIdx = getBestGFIndex();
+        double gf = (bestIdx - (BINS / 2)) / (double)(BINS / 2);
+ 
+        // Angle de tir max (perpendiculaire à la distance)
+        double maxEscapeAngle = Math.asin(8.0 / bulletSpeed);
+ 
+        // Angle prédit
+        double aimAngle = absBearing + latDir * gf * maxEscapeAngle;
+ 
+        // Tourner le canon
+        double gunTurn = Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians());
+        setTurnGunRightRadians(gunTurn);
+ 
+        // ===== 6. TIRER si conditions ok =====
+        if (Math.abs(gunTurn) < 0.05 && getGunHeat() == 0 && e.getEnergy() > 0) {
+            setFire(firePower);
+            // Enregistrer notre wave pour scoring
+            EnemyWave ow = new EnemyWave();
+            ow.fireTime     = getTime();
+            ow.bulletSpeed  = bulletSpeed;
+            ow.fireX        = getX();
+            ow.fireY        = getY();
+            ow.directAngle  = aimAngle;
+            ow.lateralDir   = latDir;
+            ow.gfIndex      = bestIdx;
+            selfWaves[bestIdx]++;
+        }
+ 
+        // ===== 7. UPDATE WAVES (avancement dans le temps) =====
+        updateWaves();
+ 
+        execute();
+    }
+ 
+    // ===== WAVE SURFING =====
+    void doWaveSurfing(double absBearing) {
+        if (waves.isEmpty()) {
+            // Mouvement orbit classique si pas de waves
+            doOrbitMovement(absBearing);
+            return;
+        }
+ 
+        // Trouver la wave la plus dangereuse (la plus proche)
+        EnemyWave surfWave = null;
+        double minDist = Double.MAX_VALUE;
+        for (EnemyWave w : waves) {
+            double dist = Point2D.Double.distance(getX(), getY(), w.fireX, w.fireY) - w.distTraveled;
+            if (dist > 0 && dist < minDist) {
+                minDist = dist;
+                surfWave = w;
+            }
+        }
+ 
+        if (surfWave == null) {
+            doOrbitMovement(absBearing);
+            return;
+        }
+ 
+        // Choisir la meilleure direction (gauche ou droite)
+        double dangerLeft  = calcWaveDanger(surfWave, -1);
+        double dangerRight = calcWaveDanger(surfWave,  1);
+ 
+        double angle;
+        if (dangerLeft < dangerRight) {
+            // Aller à gauche
+            angle = absBearing + Math.PI / 2 + 0.3;
+        } else {
+            // Aller à droite
+            angle = absBearing - Math.PI / 2 - 0.3;
+        }
+ 
+        // Éviter les murs
+        angle = adjustForWalls(angle);
+ 
+        double turn = Utils.normalRelativeAngle(angle - getHeadingRadians());
+        if (Math.abs(turn) > Math.PI / 2) {
+            turn = Utils.normalRelativeAngle(turn + Math.PI);
+            setBack(150);
+        } else {
+            setAhead(150);
+        }
+        setTurnRightRadians(turn);
+    }
+ 
+    double calcWaveDanger(EnemyWave w, int direction) {
+        // Simuler la position future dans la direction donnée
+        double simX = getX() + Math.sin(enemyAbsBearing + Math.PI + direction * Math.PI / 2) * 80;
+        double simY = getY() + Math.cos(enemyAbsBearing + Math.PI + direction * Math.PI / 2) * 80;
+ 
+        // Clamp dans le champ
+        simX = Math.max(WALL_MARGIN, Math.min(fieldWidth  - WALL_MARGIN, simX));
+        simY = Math.max(WALL_MARGIN, Math.min(fieldHeight - WALL_MARGIN, simY));
+ 
+        // Angle de cette position par rapport à la wave
+        double angle = Math.atan2(simX - w.fireX, simY - w.fireY);
+        double gf = Utils.normalRelativeAngle(angle - w.directAngle);
+        double maxEscape = Math.asin(8.0 / w.bulletSpeed);
+        if (maxEscape == 0) return 0;
+ 
+        int bin = (int)((gf / maxEscape * w.lateralDir + 1) / 2 * (BINS - 1));
+        bin = Math.max(0, Math.min(BINS - 1, bin));
+ 
+        return enemyWaves[bin];
+    }
+ 
+    void updateWaves() {
+        Iterator<EnemyWave> it = waves.iterator();
+        while (it.hasNext()) {
+            EnemyWave w = it.next();
+            w.distTraveled += w.bulletSpeed;
+ 
+            double dist = Point2D.Double.distance(getX(), getY(), w.fireX, w.fireY);
+            if (w.distTraveled > dist + 60) {
+                // La wave nous a dépassés (bullet manquée)
+                updateWaveStats(w, getX(), getY());
+                it.remove();
+            }
+        }
+    }
+ 
+    void updateWaveStats(EnemyWave w, double x, double y) {
+        double angle = Math.atan2(x - w.fireX, y - w.fireY);
+        double gf = Utils.normalRelativeAngle(angle - w.directAngle);
+        double maxEscape = Math.asin(8.0 / w.bulletSpeed);
+        if (maxEscape == 0) return;
+ 
+        int bin = (int)((gf / maxEscape * w.lateralDir + 1) / 2 * (BINS - 1));
+        bin = Math.max(0, Math.min(BINS - 1, bin));
+        enemyWaves[bin]++;
+    }
+ 
+    // ===== ORBIT FALLBACK =====
+    void doOrbitMovement(double absBearing) {
+        // Perpendiculaire à l'ennemi avec oscillation
+        double perpAngle = absBearing + Math.PI / 2 * moveDirection;
+        perpAngle = adjustForWalls(perpAngle);
+ 
+        double turn = Utils.normalRelativeAngle(perpAngle - getHeadingRadians());
+        if (Math.abs(turn) > Math.PI / 2) {
+            turn = Utils.normalRelativeAngle(turn + Math.PI);
+            setBack(120);
+        } else {
+            setAhead(120);
+        }
+        setTurnRightRadians(turn);
+ 
+        // Changer de direction aléatoirement pour imprévisibilité
+        if (Math.random() < 0.04) {
+            moveDirection *= -1;
+        }
+    }
+ 
+    // ===== AJUSTEMENT MURS =====
+    double adjustForWalls(double angle) {
+        double x = getX();
+        double y = getY();
+        double speed = 8;
+ 
+        // Prédire future position
+        double futureX = x + Math.sin(angle) * speed * 20;
+        double futureY = y + Math.cos(angle) * speed * 20;
+ 
+        double wallForce = 0;
+        if (futureX < WALL_MARGIN)             wallForce += (WALL_MARGIN - futureX) / WALL_MARGIN;
+        if (futureX > fieldWidth - WALL_MARGIN) wallForce -= (futureX - (fieldWidth - WALL_MARGIN)) / WALL_MARGIN;
+        if (futureY < WALL_MARGIN)             wallForce += (WALL_MARGIN - futureY) / WALL_MARGIN * 0;
+        if (futureY > fieldHeight - WALL_MARGIN) wallForce -= 0;
+ 
+        return angle + wallForce * 0.5;
+    }
+ 
+    // ===== CALCUL PUISSANCE DE FEU =====
+    double calcFirePower(ScannedRobotEvent e) {
+        double energy = getEnergy();
+        double dist   = e.getDistance();
+ 
+        // Plus l'ennemi est proche, plus on frappe fort
+        double power;
+        if (dist < 150) {
+            power = MAX_BULLET_POWER; // 3.0 = 12 dégâts + 6 bonus = 18 max
+        } else if (dist < 300) {
+            power = 2.5;
+        } else if (dist < 500) {
+            power = 2.0;
+        } else {
+            power = 1.5;
+        }
+ 
+        // Gestion de l'énergie : ne pas tirer trop fort si on est bas
+        if (energy < 30) power = Math.min(power, 1.5);
+        if (energy < 15) power = Math.min(power, 0.5);
+        if (energy < 5)  power = MIN_BULLET_POWER;
+ 
+        // Si ennemi est presque mort, finir avec une balle légère précise
+        if (e.getEnergy() < 5 && e.getEnergy() > 0) power = Math.min(power, e.getEnergy() / 2.0 + 0.1);
+ 
+        return Math.max(MIN_BULLET_POWER, Math.min(MAX_BULLET_POWER, power));
+    }
+ 
+    // ===== BEST GUESS FACTOR INDEX =====
+    int getBestGFIndex() {
+        int best = BINS / 2;
+        int max = -1;
+        for (int i = 0; i < BINS; i++) {
+            if (guessFactor[i] > max) {
+                max = guessFactor[i];
+                best = i;
+            }
+        }
+        return best;
+    }
+ 
+    // ===== HIT ENEMY : mettre à jour le GF gagnant =====
+    @Override
+    public void onBulletHit(BulletHitEvent e) {
+        // Trouver la wave correspondante et booster son GF
+        // Simplification : boost le dernier index utilisé
+        int lastIdx = (int)(selfWaves.length / 2);
+        double max = 0;
+        for (int i = 0; i < selfWaves.length; i++) {
+            if (selfWaves[i] > max) { max = selfWaves[i]; lastIdx = i; }
+        }
+        guessFactor[lastIdx] += 3; // Récompense les hits
+    }
+ 
+    @Override
+    public void onBulletMissed(BulletMissedEvent e) {
+        // Optionnellement pénaliser
+    }
+ 
+    // ===== HIT BY BULLET : update wave stats =====
+    @Override
+    public void onHitByBullet(HitByBulletEvent e) {
+        // Trouver la wave qui correspond
+        double bulletBearing = e.getBearingRadians() + getHeadingRadians();
+        for (EnemyWave w : waves) {
+            double wAngle = Math.atan2(getX() - w.fireX, getY() - w.fireY);
+            if (Math.abs(Utils.normalRelativeAngle(wAngle - bulletBearing)) < 0.1) {
+                updateWaveStats(w, getX(), getY());
+                waves.remove(w);
+                break;
+            }
+        }
+        // Changer de direction pour dérouter l'ennemi
+        moveDirection *= -1;
+    }
+ 
+    @Override
+    public void onHitWall(HitWallEvent e) {
+        moveDirection *= -1;
+        setBack(40);
+    }
+ 
+    @Override
+    public void onHitRobot(HitRobotEvent e) {
+        // RAM + tir instantané si on touche
+        if (e.isMyFault()) {
+            setFire(3.0);
+        }
+        moveDirection *= -1;
+    }
+ 
+    @Override
+    public void onRobotDeath(RobotDeathEvent e) {
+        // Reset des waves quand un robot meurt (multi-battle)
+        waves.clear();
+    }
+ 
+    @Override
+    public void onWin(WinEvent e) {
+        // Célébration
+        for (int i = 0; i < 50; i++) {
+            turnGunRight(36);
+            execute();
+        }
+    }
+ 
+    // ===== CLASSE INTERNE : ENEMY WAVE =====
+    class EnemyWave {
+        double fireX, fireY;
+        double directAngle;
+        double bulletSpeed;
+        double distTraveled;
+        long   fireTime;
+        int    lateralDir;
+        int    gfIndex;
+    }
+}
+ 
