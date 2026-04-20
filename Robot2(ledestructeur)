@@ -1,0 +1,68 @@
+package boss; // Le dossier sera "boss"
+
+import robocode.*;
+import robocode.util.Utils;
+import java.awt.Color;
+
+public class LeDestructeur extends AdvancedRobot {
+    
+    // Mémoire du robot
+    double previousEnergy = 100;
+    int moveDirection = 1;
+
+    public void run() {
+        // Un look de boss final
+        setColors(Color.BLACK, Color.RED, Color.BLACK, Color.RED, Color.RED);
+        
+        // Indépendance totale des éléments
+        setAdjustRadarForRobotTurn(true);
+        setAdjustGunForRobotTurn(true);
+        setAdjustRadarForGunTurn(true);
+
+        // On lance le radar à l'infini pour trouver la première cible
+        setTurnRadarRightRadians(Double.POSITIVE_INFINITY);
+    }
+
+    public void onScannedRobot(ScannedRobotEvent e) {
+        // --- 1. RADAR LOCK (Verrouillage absolu) ---
+        double radarTurn = getHeadingRadians() + e.getBearingRadians() - getRadarHeadingRadians();
+        setTurnRadarRightRadians(Utils.normalRelativeAngle(radarTurn) * 1.9);
+
+        // --- 2. ESQUIVE AVANCÉE (Matrix Style) ---
+        // On calcule si l'ennemi a perdu de l'énergie (donc s'il a tiré)
+        double energyDrop = previousEnergy - e.getEnergy();
+        if (energyDrop > 0 && energyDrop <= 3) {
+            // S'il tire, on inverse la direction et on bouge d'une distance aléatoire
+            moveDirection = -moveDirection;
+            setAhead((Math.random() * 150 + 50) * moveDirection);
+        }
+        
+        // Mouvement de base : on tourne autour de l'ennemi en crabe (Strafe)
+        setTurnRightRadians(e.getBearingRadians() + Math.PI/2 - 0.5236 * moveDirection * (e.getDistance() > 200 ? 1 : -1));
+        setAhead((Math.random() * 100 + 50) * moveDirection);
+        
+        // On mémorise son énergie pour le prochain tour
+        previousEnergy = e.getEnergy();
+
+        // --- 3. VISÉE PRÉDICTIVE (Linear Targeting) ---
+        double absoluteBearing = getHeadingRadians() + e.getBearingRadians();
+        // Calcule où l'ennemi sera en fonction de sa vitesse actuelle
+        double gunTurn = absoluteBearing - getGunHeadingRadians() + (e.getVelocity() * Math.sin(e.getHeadingRadians() - absoluteBearing) / 13.0);
+        setTurnGunRightRadians(Utils.normalRelativeAngle(gunTurn));
+
+        // --- 4. GESTION DU TIR (Dégâts max) ---
+        // Plus l'ennemi est près, plus on tire fort
+        double firePower = Math.min(400 / e.getDistance(), 3);
+        
+        // Si le canon est refroidi et aligné, on tire !
+        if (getGunHeat() == 0 && Math.abs(getGunTurnRemaining()) < 10) {
+            setFire(firePower);
+        }
+    }
+
+    // Si on touche un mur, on repart direct dans l'autre sens
+    public void onHitWall(HitWallEvent e) {
+        moveDirection = -moveDirection; 
+        setAhead(200 * moveDirection);
+    }
+}
