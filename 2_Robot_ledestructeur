@@ -28,8 +28,7 @@ public class LeDestructeur extends AdvancedRobot {
         double radarTurn = getHeadingRadians() + e.getBearingRadians() - getRadarHeadingRadians();
         setTurnRadarRightRadians(Utils.normalRelativeAngle(radarTurn) * 1.9);
 
-        // --- 2. ESQUIVE AVANCÉE (Matrix Style) ---
-        // On calcule si l'ennemi a perdu de l'énergie (donc s'il a tiré)
+        // --- 2. ESQUIVE AVANCÉE
         double energyDrop = previousEnergy - e.getEnergy();
         if (energyDrop > 0 && energyDrop <= 3) {
             // S'il tire, on inverse la direction et on bouge d'une distance aléatoire
