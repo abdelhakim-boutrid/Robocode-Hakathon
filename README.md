@@ -4,7 +4,7 @@ Langage : Java
 Plateforme : Robocode
 
 Concepts explorés : Trigonométrie, Logique prédictive, Gestion d'événements, Patterns de mouvement (Wall Smoothing, Anti-Gravity).
-
+---------------------------------------
 ## Comment tester mes robots ?
 Prérequis : Avoir Robocode installé sur votre machine.
 
