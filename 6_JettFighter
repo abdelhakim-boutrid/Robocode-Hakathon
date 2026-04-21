@@ -1,0 +1,77 @@
+package jettfighter;
+import robocode.*;
+import robocode.util.Utils;
+import java.awt.Color;
+import java.awt.geom.*;
+
+/**
+ * CataniaGladiator_Pro - Stratégie de survie puis duel final.
+ */
+public class CataniaGladiator_Pro extends AdvancedRobot {
+    private int direction = 1;
+    private double targetDistance = 400; // Distance maintenue en duel
+
+    public void run() {
+        setColors(Color.BLACK, Color.CYAN, Color.WHITE);
+        setAdjustGunForRobotTurn(true);
+        setAdjustRadarForGunTurn(true);
+
+        while (true) {
+            // Radar circulaire large pour scanner tout le champ en mêlée
+            if (getOthers() > 1) {
+                setTurnRadarRightRadians(Double.POSITIVE_INFINITY);
+            }
+            execute();
+        }
+    }
+
+    public void onScannedRobot(ScannedRobotEvent e) {
+        int numOthers = getOthers();
+        double absBearing = e.getBearingRadians() + getHeadingRadians();
+
+        // --- STRATÉGIE DE DÉPLACEMENT ---
+        if (numOthers > 1) {
+            // MODE SURVIE : On fuit l'ennemi le plus proche et on cherche les bords
+            double escapeAngle = absBearing + Math.PI; // L'opposé de l'ennemi
+            setTurnRightRadians(Utils.normalRelativeAngle(escapeAngle - getHeadingRadians()));
+            setAhead(150 * direction);
+        } else {
+            // MODE DUEL : Cercle autour du dernier survivant
+            double radarTurn = Utils.normalRelativeAngle(absBearing - getRadarHeadingRadians());
+            setTurnRadarRightRadians(radarTurn * 2); // Lock le radar
+
+            setTurnRightRadians(Utils.normalRelativeAngle(e.getBearingRadians() + Math.PI/2 - (0.2 * direction)));
+            if (e.getDistance() > targetDistance) setAhead(100 * direction);
+            else setBack(100 * direction);
+        }
+
+        // --- STRATÉGIE DE TIR (PRÉDICTIVE) ---
+        // On n'attaque fort que si on a beaucoup d'énergie ou s'il reste peu d'ennemis
+        double firePower = Math.min(400 / e.getDistance(), 3); 
+        if (numOthers > 5 && getEnergy() < 50) firePower = 0.1; // Économie d'énergie en mêlée
+
+        predictiveShoot(e, firePower);
+    }
+
+    private void predictiveShoot(ScannedRobotEvent e, double power) {
+        double absBearing = e.getBearingRadians() + getHeadingRadians();
+        // Calcul simple de l'anticipation
+        double bulletSpeed = 20 - 3 * power;
+        double lateralVelocity = e.getVelocity() * Math.sin(e.getHeadingRadians() - absBearing);
+        double offset = Math.asin(lateralVelocity / bulletSpeed);
+        
+        setTurnGunRightRadians(Utils.normalRelativeAngle(absBearing - getGunHeadingRadians() + offset));
+        
+        if (getGunHeat() == 0) {
+            setFire(power);
+        }
+    }
+
+    public void onHitWall(HitWallEvent e) {
+        direction *= -1; // Change de sens si on tape un mur
+    }
+
+    public void onHitRobot(HitRobotEvent e) {
+        direction *= -1; // Change de sens si on percute quelqu'un (pour s'enfuir)
+    }
+}
