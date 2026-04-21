@@ -1,0 +1,75 @@
+package veigarus;
+import robocode.*;
+import java.awt.Color;
+import robocode.util.Utils;
+
+/**
+ * GladiatorRobot - Un robot équilibré avec visée prédictive
+ */
+public class GladiatorRobot extends AdvancedRobot {
+
+    public void run() {
+        // Personnalisation esthétique
+        setColors(Color.black, Color.red, Color.yellow);
+        setAdjustGunForRobotTurn(true);
+        setAdjustRadarForGunTurn(true);
+
+        while (true) {
+            // Faire tourner le radar à l'infini pour trouver des cibles
+            turnRadarRightRadians(Double.POSITIVE_INFINITY);
+        }
+    }
+
+    public void onScannedRobot(ScannedRobotEvent e) {
+        // 1. CALCUL DE LA VISÉE PRÉDICTIVE (Linéaire)
+        // On calcule où l'ennemi sera en fonction de sa vitesse et direction
+        double bulletPower = Math.min(3.0, getEnergy());
+        double myX = getX();
+        double myY = getY();
+        double absoluteBearing = getHeadingRadians() + e.getBearingRadians();
+        double enemyX = myX + e.getDistance() * Math.sin(absoluteBearing);
+        double enemyY = myY + e.getDistance() * Math.cos(absoluteBearing);
+        double enemyHeading = e.getHeadingRadians();
+        double enemyVelocity = e.getVelocity();
+
+        double deltaTime = 0;
+        double battleFieldHeight = getBattleFieldHeight(), battleFieldWidth = getBattleFieldWidth();
+        double predictedX = enemyX, predictedY = enemyY;
+
+        // Simulation de la position future
+        while ((++deltaTime) * (20.0 - 3.0 * bulletPower) < PointDistance(myX, myY, predictedX, predictedY)) {
+            predictedX += Math.sin(enemyHeading) * enemyVelocity;
+            predictedY += Math.cos(enemyHeading) * enemyVelocity;
+            if (predictedX < 18.0 || predictedY < 18.0 || predictedX > battleFieldWidth - 18.0 || predictedY > battleFieldHeight - 18.0) {
+                break; // On s'arrête si l'ennemi va taper un mur
+            }
+        }
+
+        double theta = Utils.normalRelativeAngle(Math.atan2(predictedX - myX, predictedY - myY) - getGunHeadingRadians());
+        setTurnGunRightRadians(theta);
+        
+        // Tirer si le canon est prêt
+        if (getGunHeat() == 0 && Math.abs(getGunTurnRemaining()) < 10) {
+            setFire(bulletPower);
+        }
+
+        // 2. MOUVEMENT : "Circle Strafe"
+        // On reste perpendiculaire à l'ennemi pour être dur à toucher
+        setTurnRightRadians(Utils.normalRelativeAngle(e.getBearingRadians() + Math.PI / 2 - 0.5236 * (double)direction));
+        
+        // Avancer ou reculer
+        setAhead(100 * direction);
+
+        // 3. LOCK DU RADAR
+        // Garde le radar fixé sur l'ennemi détecté
+        double radarTurn = Utils.normalRelativeAngle(absoluteBearing - getRadarHeadingRadians());
+        setTurnRadarRightRadians(radarTurn * 2);
+    }
+
+    private int direction = 1;
+    public void onHitWall(HitWallEvent e) { direction *= -1; }
+
+    public double PointDistance(double x1, double y1, double x2, double y2) {
+        return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
+    }
+}
