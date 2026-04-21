@@ -6,7 +6,7 @@ Plateforme : Robocode
 Concepts explorés : Trigonométrie, Logique prédictive, Gestion d'événements, Patterns de mouvement (Wall Smoothing, Anti-Gravity).
 
 > [!TIP]
-> N'hésitez pas à donner vos retours ou à proposer des améliorations via les issues ou des pull requests pour m'aider à créer le robot parfait !
+> N'hésitez pas à donner vos retours ou à proposer des améliorations via les issues ou des pull requests pour m'aider à créer le robot parfait 
 ---------------------------------------
 ## Comment tester mes robots ?
 Prérequis : Avoir Robocode installé sur votre machine.
