@@ -1,7 +1,6 @@
 🛠️ Technologies & Outils
-Langage : Java
-
-Plateforme : Robocode
+**Langage :** Java 
+**Plateforme :** [Robocode](https://robocode.sourceforge.io/)
 
 Concepts explorés : Trigonométrie, Logique prédictive, Gestion d'événements, Patterns de mouvement (Wall Smoothing, Anti-Gravity).
 
