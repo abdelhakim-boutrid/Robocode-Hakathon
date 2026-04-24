@@ -1,9 +1,12 @@
-<img width="640" height="480" alt="robocode 1" src="https://github.com/user-attachments/assets/65096982-8c19-414b-8766-dce8ee18724e" />
 🛠️ Technologies & Outils
 
 **Langage :** Java 
 
 **Plateforme :** [Robocode](https://robocode.sourceforge.io/)
+
+
+<img width="640" height="480" alt="robocode 1" src="https://github.com/user-attachments/assets/65096982-8c19-414b-8766-dce8ee18724e" />
+
 
 Concepts explorés : Trigonométrie, Logique prédictive, Gestion d'événements, Patterns de mouvement (Wall Smoothing, Anti-Gravity).
 
