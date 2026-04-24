@@ -1,0 +1,341 @@
+package veigar;
+
+import robocode.*;
+import robocode.util.Utils;
+import java.awt.*;
+import java.awt.geom.Point2D;
+import java.util.HashMap;
+import java.util.Map;
+
+public class veigar extends AdvancedRobot {
+
+    enum CombatMode { AGGRESSIVE, CAUTIOUS, SURVIVAL, ENDGAME }
+
+    static class EnemyInfo {
+        String name;
+        double x, y, distance, energy, heading, velocity;
+        long lastSeen;
+    }
+
+    private Map<String, EnemyInfo> enemies = new HashMap<>();
+    private String targetName = null;
+    private CombatMode mode = CombatMode.AGGRESSIVE;
+
+    // Spécifique ENDGAME
+    private int moveDirection = 1;
+    private double endgameEnemyEnergy = 100.0;
+
+    @Override
+    public void run() {
+        setBodyColor(new Color(180, 0, 0));
+        setGunColor(Color.BLACK);
+        setRadarColor(new Color(255, 140, 0));
+        setBulletColor(Color.YELLOW);
+        setScanColor(Color.RED);
+
+        setAdjustRadarForGunTurn(true);
+        setAdjustGunForRobotTurn(true);
+        setAdjustRadarForRobotTurn(true);
+
+        while (true) {
+            setTurnRadarRightRadians(Math.PI * 4);
+            updateCombatMode();
+            if (!enemies.isEmpty()) {
+                chooseTarget();
+                aimAndFire();
+                if (mode == CombatMode.ENDGAME) {
+                    orbitalMove();
+                } else {
+                    antiGravityMove();
+                }
+            }
+            execute();
+        }
+    }
+
+    private void updateCombatMode() {
+        // 1v1 → mode ENDGAME forcé, peu importe l'énergie
+        if (getOthers() == 1) {
+            if (mode != CombatMode.ENDGAME) {
+                // Réinitialise le tracking d'énergie à l'entrée du endgame
+                for (EnemyInfo info : enemies.values()) {
+                    endgameEnemyEnergy = info.energy;
+                    break;
+                }
+            }
+            mode = CombatMode.ENDGAME;
+            return;
+        }
+
+        // Mode normal (melee) avec hystérésis
+        double e = getEnergy();
+        if (mode == CombatMode.SURVIVAL && e > 30)         mode = CombatMode.CAUTIOUS;
+        else if (mode == CombatMode.CAUTIOUS && e > 60)    mode = CombatMode.AGGRESSIVE;
+        else if (mode == CombatMode.ENDGAME)               mode = CombatMode.AGGRESSIVE;
+        else if (e < 20)                                   mode = CombatMode.SURVIVAL;
+        else if (e < 50 && mode == CombatMode.AGGRESSIVE)  mode = CombatMode.CAUTIOUS;
+    }
+
+    @Override
+    public void onScannedRobot(ScannedRobotEvent e) {
+        double absoluteBearing = getHeadingRadians() + e.getBearingRadians();
+        EnemyInfo info = enemies.getOrDefault(e.getName(), new EnemyInfo());
+        info.name = e.getName();
+        info.x = getX() + e.getDistance() * Math.sin(absoluteBearing);
+        info.y = getY() + e.getDistance() * Math.cos(absoluteBearing);
+        info.distance = e.getDistance();
+        info.energy = e.getEnergy();
+        info.heading = e.getHeadingRadians();
+        info.velocity = e.getVelocity();
+        info.lastSeen = getTime();
+        enemies.put(e.getName(), info);
+
+        // ENDGAME : détection du tir ennemi via chute d'énergie
+        if (mode == CombatMode.ENDGAME) {
+            double drop = endgameEnemyEnergy - e.getEnergy();
+            if (drop > 0.09 && drop <= 3.0) {
+                moveDirection = -moveDirection;
+            }
+            endgameEnemyEnergy = e.getEnergy();
+        }
+    }
+
+    private void chooseTarget() {
+        // ENDGAME : pas de filtre, on prend le seul survivant
+        if (mode == CombatMode.ENDGAME) {
+            for (EnemyInfo info : enemies.values()) {
+                if (getTime() - info.lastSeen > 50) continue;
+                targetName = info.name;
+                return;
+            }
+            targetName = null;
+            return;
+        }
+
+        String best = null;
+        double bestScore = Double.MAX_VALUE;
+        for (EnemyInfo info : enemies.values()) {
+            if (getTime() - info.lastSeen > 8) continue;
+
+            double score = info.distance;
+            if (mode == CombatMode.CAUTIOUS) {
+                score += info.energy * 4;
+            } else if (mode == CombatMode.SURVIVAL) {
+                if (info.energy > 15) continue;
+                score += info.energy * 10;
+            }
+
+            if (score < bestScore) {
+                bestScore = score;
+                best = info.name;
+            }
+        }
+        targetName = best;
+    }
+
+    private void aimAndFire() {
+        if (targetName == null) return;
+        EnemyInfo t = enemies.get(targetName);
+        if (t == null || getTime() - t.lastSeen > 8) return;
+
+        double bulletPower;
+        switch (mode) {
+            case AGGRESSIVE:
+                if (t.distance < 150)      bulletPower = 3.0;
+                else if (t.distance < 400) bulletPower = 2.0;
+                else                       bulletPower = 1.5;
+                break;
+            case CAUTIOUS:
+                bulletPower = (t.distance < 300) ? 1.5 : 1.0;
+                break;
+            case SURVIVAL:
+                bulletPower = Math.min(0.8, t.energy / 4.0);
+                break;
+            case ENDGAME:
+            default:
+                // Puissance selon le ratio d'HP : plus on domine, plus on frappe fort
+                if (getEnergy() > t.energy + 20)      bulletPower = 3.0;
+                else if (getEnergy() > t.energy)      bulletPower = 2.5;
+                else if (getEnergy() > t.energy - 20) bulletPower = 2.0;
+                else                                   bulletPower = 1.5;
+                // Adaptation distance
+                if (t.distance > 500) bulletPower = Math.min(bulletPower, 2.0);
+                break;
+        }
+
+        bulletPower = Math.min(bulletPower, t.energy / 4.0);
+        if (getEnergy() < bulletPower + 0.5) return;
+
+        double myX = getX(), myY = getY();
+        double predX = t.x, predY = t.y;
+        double bulletSpeed = 20.0 - 3.0 * bulletPower;
+        double fW = getBattleFieldWidth(), fH = getBattleFieldHeight();
+        double deltaTime = 0;
+
+        while ((++deltaTime) * bulletSpeed
+        < Point2D.Double.distance(myX, myY, predX, predY)) {
+            predX += Math.sin(t.heading) * t.velocity;
+            predY += Math.cos(t.heading) * t.velocity;
+            if (predX < 18 || predY < 18 || predX > fW - 18 || predY > fH - 18) {
+                predX = Math.min(Math.max(18, predX), fW - 18);
+                predY = Math.min(Math.max(18, predY), fH - 18);
+                break;
+            }
+        }
+
+        double theta = Utils.normalAbsoluteAngle(Math.atan2(predX - myX, predY - myY));
+        double gunTurn = Utils.normalRelativeAngle(theta - getGunHeadingRadians());
+        setTurnGunRightRadians(gunTurn);
+
+        double aimThreshold = (mode == CombatMode.SURVIVAL)
+                ? Math.atan2(4, t.distance)
+                : Math.atan2(9, t.distance);
+
+        if (Math.abs(gunTurn) < aimThreshold && getGunHeat() == 0) {
+            setFire(bulletPower);
+        }
+    }
+
+    /** Mouvement orbital + reverse-on-shot : optimal en 1v1 */
+    private void orbitalMove() {
+        if (targetName == null) {
+            // Pas de cible scannée : avance vers le centre pour chercher
+            double centerX = getBattleFieldWidth() / 2;
+            double centerY = getBattleFieldHeight() / 2;
+            double angle = Math.atan2(centerX - getX(), centerY - getY());
+            setTurnRightRadians(Utils.normalRelativeAngle(angle - getHeadingRadians()));
+            setAhead(80);
+            return;
+        }
+        EnemyInfo t = enemies.get(targetName);
+        if (t == null) return;
+
+        double absoluteBearing = Math.atan2(t.x - getX(), t.y - getY());
+        // Orbital : perpendiculaire + léger biais vers l'ennemi
+        // 5% de chance par tick d'injecter un virage "chaos" imprévisible
+// Entre -45° et +45° d'écart par rapport à l'orbital normal
+        double chaosOffset = 0;
+        if (Math.random() < 0.05) {
+            chaosOffset = (Math.random() - 0.5) * Math.PI / 2;
+        }
+        double orbitAngle = absoluteBearing + Math.PI / 2 - (0.3 * moveDirection) + chaosOffset;
+        setTurnRightRadians(Utils.normalRelativeAngle(orbitAngle - getHeadingRadians()));
+        setAhead(120 * moveDirection);
+    }
+
+    private void antiGravityMove() {
+        double xForce = 0, yForce = 0;
+        double myX = getX(), myY = getY();
+
+        double enemyRepulsion, targetAttraction;
+        switch (mode) {
+            case AGGRESSIVE: enemyRepulsion = 50000;  targetAttraction =  3.0; break;
+            case CAUTIOUS:   enemyRepulsion = 100000; targetAttraction =  1.0; break;
+            case SURVIVAL:
+            default:         enemyRepulsion = 200000; targetAttraction = -2.0; break;
+        }
+
+        for (EnemyInfo info : enemies.values()) {
+            if (getTime() - info.lastSeen > 20) continue;
+            double dx = myX - info.x;
+            double dy = myY - info.y;
+            double d = Math.max(1, Math.sqrt(dx*dx + dy*dy));
+            double mag = enemyRepulsion / (d * d);
+            xForce += (dx / d) * mag;
+            yForce += (dy / d) * mag;
+        }
+
+        double wallForce = (mode == CombatMode.SURVIVAL) ? 50000 : 30000;
+        double fW = getBattleFieldWidth(), fH = getBattleFieldHeight();
+        xForce += wallForce / (myX * myX + 1);
+        xForce -= wallForce / ((fW - myX) * (fW - myX) + 1);
+        yForce += wallForce / (myY * myY + 1);
+        yForce -= wallForce / ((fH - myY) * (fH - myY) + 1);
+
+        if (targetName != null) {
+            EnemyInfo t = enemies.get(targetName);
+            if (t != null && getTime() - t.lastSeen < 20) {
+                double dx = t.x - myX;
+                double dy = t.y - myY;
+                double d = Math.max(1, Math.sqrt(dx*dx + dy*dy));
+                xForce += (dx / d) * targetAttraction;
+                yForce += (dy / d) * targetAttraction;
+            }
+        }
+
+        double angle = Math.atan2(xForce, yForce);
+        double turn = Utils.normalRelativeAngle(angle - getHeadingRadians());
+
+        if (Math.abs(turn) > Math.PI / 2) {
+            turn = Utils.normalRelativeAngle(turn + Math.PI);
+            setTurnRightRadians(turn);
+            setAhead(-60);
+        } else {
+            setTurnRightRadians(turn);
+            setAhead(60);
+        }
+    }
+
+    @Override
+    public void onHitByBullet(HitByBulletEvent e) {
+        // En endgame : flip direction pour dodger le prochain tir
+        if (mode == CombatMode.ENDGAME) {
+            moveDirection = -moveDirection;
+        }
+    }
+
+    @Override
+    public void onHitWall(HitWallEvent e) {
+        if (mode == CombatMode.ENDGAME) {
+            moveDirection = -moveDirection;
+        }
+        setBack(30);
+    }
+
+    @Override
+    public void onHitRobot(HitRobotEvent e) {
+        if (mode != CombatMode.SURVIVAL && getGunHeat() == 0 && getEnergy() > 1) {
+            setFire(Math.min(3.0, e.getEnergy() / 4.0));
+        }
+        if (e.isMyFault()) setBack(30);
+    }
+
+    @Override
+    public void onRobotDeath(RobotDeathEvent e) {
+        enemies.remove(e.getName());
+        if (e.getName().equals(targetName)) targetName = null;
+    }
+
+    @Override
+    public void onPaint(java.awt.Graphics2D g) {
+        // Petit emoji de biceps au-dessus de GoMuscu
+        g.setColor(Color.YELLOW);
+        g.setFont(new Font("SansSerif", Font.BOLD, 14));
+        g.drawString("💪", (int) getX() - 10, (int) getY() + 70);
+
+        // Affiche l'état mental selon le mode
+        String statusText = "";
+        switch (mode) {
+            case AGGRESSIVE: statusText = "BENCHING"; break;
+            case CAUTIOUS:   statusText = "WARM-UP"; break;
+            case SURVIVAL:   statusText = "SQUATTING"; break;
+            case ENDGAME:    statusText = "PR ATTEMPT"; break;
+        }
+        g.setColor(new Color(255, 200, 0));
+        g.setFont(new Font("Monospaced", Font.BOLD, 11));
+        g.drawString(statusText, (int) getX() - 30, (int) getY() + 65);
+    }
+
+    @Override
+    public void onWin(WinEvent e) {
+        out.println("EASY. Light weight baby. 🏋️");
+        for (int i = 0; i < 50; i++) {
+            setTurnRight(30);
+            setAhead(20);
+            execute();
+            setTurnLeft(30);
+            setBack(20);
+            execute();
+        }
+    }
+}
