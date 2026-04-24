@@ -1,4 +1,4 @@
-package boss; // Le dossier sera "boss"
+package boss;
 
 import robocode.*;
 import robocode.util.Utils;
