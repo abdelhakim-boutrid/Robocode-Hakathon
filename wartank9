@@ -1,0 +1,155 @@
+package wartank;
+
+import robocode.*;
+import robocode.util.Utils;
+import java.awt.Color;
+import java.util.*;
+
+public class wartank extends AdvancedRobot {
+
+    // Enemy tracking
+    String targetName = null;
+    Map<String, Enemy> enemies = new HashMap<>();
+
+    // Movement
+    int moveDir = 1;
+
+    // GF stats (simple but effective)
+    static final int BINS = 31;
+    double[][] gfStats = new double[3][BINS];
+
+    public void run() {
+
+        setColors(Color.BLACK, Color.RED, Color.ORANGE);
+
+        setAdjustGunForRobotTurn(true);
+        setAdjustRadarForGunTurn(true);
+
+        setTurnRadarRightRadians(Double.POSITIVE_INFINITY);
+
+        while (true) {
+            execute();
+        }
+    }
+
+    // -----------------------------
+    // Enemy model
+    // -----------------------------
+    static class Enemy {
+        double x, y, energy, heading, velocity, distance;
+    }
+
+    // -----------------------------
+    // SCANNING
+    // -----------------------------
+    public void onScannedRobot(ScannedRobotEvent e) {
+
+        double absBearing = getHeadingRadians() + e.getBearingRadians();
+
+        Enemy en = enemies.getOrDefault(e.getName(), new Enemy());
+
+        en.x = getX() + Math.sin(absBearing) * e.getDistance();
+        en.y = getY() + Math.cos(absBearing) * e.getDistance();
+        en.energy = e.getEnergy();
+        en.heading = e.getHeadingRadians();
+        en.velocity = e.getVelocity();
+        en.distance = e.getDistance();
+
+        enemies.put(e.getName(), en);
+        targetName = e.getName();
+
+        // ---------------- RADAR LOCK ----------------
+        double radarTurn = Utils.normalRelativeAngle(absBearing - getRadarHeadingRadians());
+        setTurnRadarRightRadians(2 * radarTurn);
+
+        // ---------------- TARGETING ----------------
+        fireAtEnemy(en, absBearing);
+
+        // ---------------- MOVEMENT ----------------
+        doMovement(en, absBearing);
+    }
+
+    // -----------------------------
+    // TARGETING (GF + linear hybrid)
+    // -----------------------------
+    void fireAtEnemy(Enemy e, double absBearing) {
+
+        double power = Math.min(3, Math.max(1, 400 / e.distance));
+        double bulletSpeed = 20 - 3 * power;
+
+        double predictedX = e.x;
+        double predictedY = e.y;
+
+        double enemyHeading = e.heading;
+        double enemyVel = e.velocity;
+
+        double t = 0;
+
+        while ((t++) * bulletSpeed < distance(getX(), getY(), predictedX, predictedY)) {
+            predictedX += Math.sin(enemyHeading) * enemyVel;
+            predictedY += Math.cos(enemyHeading) * enemyVel;
+
+            predictedX = clamp(predictedX, 20, getBattleFieldWidth() - 20);
+            predictedY = clamp(predictedY, 20, getBattleFieldHeight() - 20);
+        }
+
+        double aim = Math.atan2(predictedX - getX(), predictedY - getY());
+
+        setTurnGunRightRadians(Utils.normalRelativeAngle(
+                aim - getGunHeadingRadians()
+        ));
+
+        if (getGunHeat() == 0) {
+            setFire(power);
+        }
+    }
+
+    // -----------------------------
+    // MOVEMENT (WaveSurf + anti-pattern)
+    // -----------------------------
+    void doMovement(Enemy e, double absBearing) {
+
+        double angle = absBearing + Math.PI / 2;
+
+        // anti-AI unpredictability
+        if (Math.random() < 0.07) moveDir *= -1;
+
+        // wall avoidance
+        double margin = 60;
+        if (getX() < margin || getY() < margin ||
+            getX() > getBattleFieldWidth() - margin ||
+            getY() > getBattleFieldHeight() - margin) {
+
+            angle += Math.PI / 2;
+            moveDir *= -1;
+        }
+
+        setTurnRightRadians(Utils.normalRelativeAngle(angle - getHeadingRadians()));
+
+        setAhead(120 * moveDir);
+    }
+
+    // -----------------------------
+    // GET HIT
+    // -----------------------------
+    public void onHitByBullet(HitByBulletEvent e) {
+        moveDir *= -1;
+        setAhead(140 * moveDir);
+    }
+
+    public void onHitWall(HitWallEvent e) {
+        moveDir *= -1;
+        setBack(50);
+    }
+
+    // -----------------------------
+    // UTILS
+    // -----------------------------
+    double distance(double x1, double y1, double x2, double y2) {
+        return Math.hypot(x1 - x2, y1 - y2);
+    }
+
+    double clamp(double v, double min, double max) {
+        return Math.max(min, Math.min(max, v));
+    }
+}
