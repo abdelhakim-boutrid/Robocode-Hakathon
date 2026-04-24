@@ -1,0 +1,488 @@
+import robocode.*;
+import robocode.util.Utils;
+import java.awt.*;
+import java.util.*;
+import java.util.List;
+
+
+public class shooter extends AdvancedRobot {
+
+    // ── Constantes ──────────────────────────────────────────────────────────
+    private static final double BULLET_SPEED_BASE   = 20.0;
+    private static final double WALL_MARGIN          = 60.0;
+    private static final int    HISTORY_SIZE         = 30;
+    private static final double ORBIT_DISTANCE       = 200.0;
+
+    // ── État du robot ────────────────────────────────────────────────────────
+    private Map<String, EnemyData> enemies = new HashMap<>();
+    private EnemyData target = null;
+    private int       direction    = 1;   // sens d'orbite (+1 ou -1)
+    private int       moveDir      = 1;   // sens de déplacement
+    private double    lastEnergy   = 100;
+    private boolean   gunReady     = false;
+    private int       ticksAlive   = 0;
+    private double    waveDodgeDir = 1;   // direction d'esquive de vague
+
+    // ── Skin / animation ────────────────────────────────────────────────────
+    private int   paintTick = 0;   // compteur pour les animations
+    private float hueShift  = 0f;  // rotation de teinte pour l'aura
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  BOUCLE PRINCIPALE
+    // ──────────────────────────────────────────────────────────────────────────
+    @Override
+    public void run() {
+        // ── SKIN : Démon des Flammes ──────────────────────────────────────────
+        setBodyColor(new Color(184, 153, 0));           // corps noir abyssal
+        setGunColor(new Color(201, 180, 0));           // canon plasma violet
+        setRadarColor(new Color(149, 140, 0));          // radar rouge sang
+        setBulletColor(new Color(89, 255, 0));      // balles roses néon
+        setScanColor(new Color(184, 153, 0, 255));     // faisceau violet semi-transparent
+
+        // Indépendance des composants
+        setAdjustGunForRobotTurn(true);
+        setAdjustRadarForGunTurn(true);
+        setAdjustRadarForRobotTurn(true);
+
+        while (true) {
+            ticksAlive++;
+            paintTick++;
+            hueShift = (hueShift + 0.02f) % 1.0f;
+
+            // 1. Radar : scan tournant ou lock sur cible
+            doRadar();
+
+            // 2. Mouvement anti-bullet
+            doMovement();
+
+            // 3. Canon : visée prédictive
+            doGun();
+
+            execute();
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  RADAR
+    // ──────────────────────────────────────────────────────────────────────────
+    private void doRadar() {
+        if (enemies.isEmpty() || target == null) {
+            // Scan tournant rapide pour trouver des ennemis
+            setTurnRadarRight(Double.POSITIVE_INFINITY);
+        } else {
+            // Radar lock : toujours pointer vers la cible
+            double radarTurn = Utils.normalRelativeAngleDegrees(
+                    target.bearing + getHeading() - getRadarHeading());
+            // Overscan pour ne pas rater
+            double overscan = Math.signum(radarTurn) * 36.0;
+            setTurnRadarRight(radarTurn + overscan);
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  MOUVEMENT ANTI-PROJECTILE (orbite + wall-smoothing + dodge)
+    // ──────────────────────────────────────────────────────────────────────────
+    private void doMovement() {
+        if (target == null) {
+            // Pas de cible : se placer au centre
+            goToCenter();
+            return;
+        }
+
+        // Distance à la cible
+        double dist = target.distance;
+
+        // Orbite autour de la cible à ORBIT_DISTANCE
+        double orbitAngle = direction * 90.0;
+
+        // Ajustement de la distance orbitale
+        if (dist < ORBIT_DISTANCE * 0.6) {
+            orbitAngle += direction * 30.0; // s'éloigner
+        } else if (dist > ORBIT_DISTANCE * 1.4) {
+            orbitAngle -= direction * 30.0; // se rapprocher
+        }
+
+        // Calcul de l'angle cible du robot (cap absolu)
+        double targetAngle = Utils.normalRelativeAngleDegrees(
+                target.bearing + orbitAngle);
+
+        // Wall-smoothing : éviter les murs
+        targetAngle = wallSmooth(targetAngle);
+
+        // Oscillation d'esquive toutes les N ticks
+        if (ticksAlive % 17 == 0) {
+            waveDodgeDir *= -1;
+        }
+
+        setTurnRight(targetAngle);
+        setAhead(moveDir * 150 + waveDodgeDir * 30);
+    }
+
+    /**
+     * Wall-smoothing : ajuste le cap pour longer les murs.
+     */
+    private double wallSmooth(double angle) {
+        double bx = getX();
+        double by = getY();
+        double bh = getHeading() + angle;
+
+        // Projection de la position future
+        double nx = bx + Math.sin(Math.toRadians(bh)) * 160;
+        double ny = by + Math.cos(Math.toRadians(bh)) * 160;
+
+        double w = getBattleFieldWidth();
+        double h = getBattleFieldHeight();
+
+        boolean wallHit =  nx < WALL_MARGIN || nx > w - WALL_MARGIN
+                        || ny < WALL_MARGIN || ny > h - WALL_MARGIN;
+
+        if (wallHit) {
+            // Inverser le sens d'orbite
+            direction *= -1;
+            angle = Utils.normalRelativeAngleDegrees(angle + direction * 90.0);
+        }
+        return angle;
+    }
+
+    /** Se diriger vers le centre du champ de bataille. */
+    private void goToCenter() {
+        double cx = getBattleFieldWidth()  / 2.0;
+        double cy = getBattleFieldHeight() / 2.0;
+        double angle = Utils.normalRelativeAngleDegrees(
+                Math.toDegrees(Math.atan2(cx - getX(), cy - getY())) - getHeading());
+        setTurnRight(angle);
+        setAhead(100);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  CANON – VISÉE PRÉDICTIVE
+    // ──────────────────────────────────────────────────────────────────────────
+    private void doGun() {
+        if (target == null) return;
+
+        // Puissance de tir adaptative selon l'énergie et la distance
+        double firePower = computeFirePower();
+        double bulletSpeed = BULLET_SPEED_BASE - 3.0 * firePower;
+
+        // Prédiction de la position future (linear targeting)
+        double[] predicted = predictPosition(target, bulletSpeed);
+
+        // Angle du canon vers la position prédite
+        double absoluteGunBearing = Math.toDegrees(
+                Math.atan2(predicted[0] - getX(), predicted[1] - getY()));
+        double gunTurn = Utils.normalRelativeAngleDegrees(
+                absoluteGunBearing - getGunHeading());
+
+        setTurnGunRight(gunTurn);
+
+        // Tirer si le canon est approximativement aligné
+        if (getGunHeat() == 0 && Math.abs(gunTurn) < 5.0 + (300 / target.distance)) {
+            setFire(firePower);
+        }
+    }
+
+    /**
+     * Prédit la position de la cible à l'impact du projectile.
+     * Utilise le linear targeting avec une estimation en temps de vol.
+     */
+    private double[] predictPosition(EnemyData e, double bulletSpeed) {
+        double ex = e.absX;
+        double ey = e.absY;
+        double eHeadingRad = Math.toRadians(e.heading);
+        double eVel = e.velocity;
+
+        // Temps de vol estimé en ticks
+        double dx = ex - getX();
+        double dy = ey - getY();
+        int ticks = 0;
+
+        while (Math.hypot(dx, dy) > bulletSpeed * ticks && ticks < 100) {
+            dx = ex + Math.sin(eHeadingRad) * eVel * ticks - getX();
+            dy = ey + Math.cos(eHeadingRad) * eVel * ticks - getY();
+            ticks++;
+        }
+
+        // Clamp dans le champ de bataille
+        double px = Math.max(18, Math.min(getBattleFieldWidth()  - 18, ex + Math.sin(eHeadingRad) * eVel * ticks));
+        double py = Math.max(18, Math.min(getBattleFieldHeight() - 18, ey + Math.cos(eHeadingRad) * eVel * ticks));
+
+        return new double[]{px, py};
+    }
+
+    /**
+     * Calcule la puissance de tir optimale.
+     */
+    private double computeFirePower() {
+        double dist     = target.distance;
+        double myEnergy = getEnergy();
+
+        // Puissance de base selon la distance
+        double power;
+        if (dist < 150)       power = 3.0;
+        else if (dist < 300)  power = 2.5;
+        else if (dist < 500)  power = 2.0;
+        else                  power = 1.5;
+
+        // Économiser l'énergie si faible
+        if (myEnergy < 20)    power = Math.min(power, 1.5);
+        if (myEnergy < 10)    power = Math.min(power, 1.0);
+        if (myEnergy < 5)     power = 0.5;
+
+        // Coup de grâce si l'ennemi est presque mort
+        if (target.energy > 0 && target.energy <= 4.0) {
+            power = Math.min(myEnergy * 0.9, 3.0);
+        }
+
+        return Math.max(0.1, Math.min(3.0, power));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  ÉVÉNEMENTS
+    // ──────────────────────────────────────────────────────────────────────────
+
+    @Override
+    public void onScannedRobot(ScannedRobotEvent e) {
+        String name = e.getName();
+
+        // Mettre à jour les données de l'ennemi
+        EnemyData ed = enemies.computeIfAbsent(name, k -> new EnemyData(k));
+        ed.update(e, this);
+
+        // Détecter si l'ennemi a tiré (chute d'énergie)
+        double energyDrop = lastEnergy - ed.energy;
+        if (energyDrop > 0.1 && energyDrop <= 3.0) {
+            // L'ennemi a probablement tiré — osciller en sens inverse
+            waveDodgeDir *= -1;
+            moveDir *= -1;
+        }
+        lastEnergy = ed.energy;
+
+        // Sélectionner la meilleure cible
+        selectTarget();
+    }
+
+    @Override
+    public void onHitByBullet(HitByBulletEvent e) {
+        // Changer de direction d'orbite à l'impact
+        direction *= -1;
+        moveDir   *= -1;
+    }
+
+    @Override
+    public void onHitWall(HitWallEvent e) {
+        moveDir *= -1;
+        direction *= -1;
+    }
+
+    @Override
+    public void onHitRobot(HitRobotEvent e) {
+        // Reculer si on percute un robot
+        moveDir *= -1;
+        setBack(100);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  SKIN GRAPHIQUE — onPaint
+    //  Dessine : aura pulsante, flammes animées, crâne, anneau d'énergie
+    // ──────────────────────────────────────────────────────────────────────────
+    @Override
+    public void onPaint(Graphics2D g) {
+        double cx = getX();
+        double cy = getY();
+        double energy = getEnergy();
+        int t = paintTick;
+
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+        // ── 1. Aura extérieure pulsante (violet → rouge) ─────────────────────
+        float pulse = (float)(0.4 + 0.6 * Math.abs(Math.sin(t * 0.08)));
+        int auraR = (int)(180 * pulse);
+        int auraG = 0;
+        int auraB = (int)(255 * (1f - pulse * 0.5f));
+        for (int r = 40; r >= 20; r -= 4) {
+            int alpha = (int)(60 * pulse * (r / 40.0));
+            g.setColor(new Color(auraR, auraG, auraB, Math.min(alpha, 255)));
+            g.fillOval((int)(cx - r), (int)(cy - r), r * 2, r * 2);
+        }
+
+        // ── 2. Anneau d'énergie (plein = vert, bas = rouge) ──────────────────
+        double energyRatio = energy / 100.0;
+        int eR = (int)(255 * (1.0 - energyRatio));
+        int eG = (int)(255 * energyRatio);
+        g.setColor(new Color(eR, eG, 30, 200));
+        g.setStroke(new BasicStroke(3f));
+        int arcAngle = (int)(360 * energyRatio);
+        g.drawArc((int)(cx - 22), (int)(cy - 22), 44, 44, 90, -arcAngle);
+
+        // ── 3. Flammes animées sous le robot ─────────────────────────────────
+        drawFlames(g, cx, cy, t);
+
+        // ── 4. Corps principal : hexagone noir laqué ─────────────────────────
+        g.setColor(new Color(15, 10, 25));
+        Polygon hex = makeHexagon(cx, cy, 18);
+        g.fillPolygon(hex);
+
+        // Bordure dorée
+        g.setColor(new Color(255, 180, 0, 220));
+        g.setStroke(new BasicStroke(1.5f));
+        g.drawPolygon(hex);
+
+        // ── 5. Crâne stylisé au centre du corps ─────────────────────────────
+        drawSkull(g, cx, cy);
+
+        // ── 6. Étincelles orbitales ──────────────────────────────────────────
+        drawSparks(g, cx, cy, t);
+
+        // ── 7. Texte nom + énergie au-dessus ─────────────────────────────────
+        g.setFont(new Font("Arial", Font.BOLD, 9));
+        g.setColor(new Color(255, 200, 0, 220));
+        String label = "☠ " + (int)energy + "%";
+        g.drawString(label, (int)(cx - 14), (int)(cy - 28));
+    }
+
+    /** Dessine des flammes animées sous le robot. */
+    private void drawFlames(Graphics2D g, double cx, double cy, int t) {
+        Random rng = new Random(t / 3); // pseudo-aléatoire mais stable par groupe de 3 ticks
+        int numFlames = 7;
+        for (int i = 0; i < numFlames; i++) {
+            double angle = (i / (double) numFlames) * Math.PI * 2;
+            double wobble = Math.sin(t * 0.15 + i * 1.3) * 4;
+            double fx = cx + Math.cos(angle) * (10 + wobble);
+            double fy = cy + Math.sin(angle) * (10 + wobble);
+            double height = 8 + Math.abs(Math.sin(t * 0.1 + i)) * 10;
+
+            // Dégradé orange → jaune → transparent
+            int[] reds   = {255, 255, 200};
+            int[] greens = {60,  140,  80};
+            int[] blues  = {0,    0,   0};
+            int[] alphas = {200, 140,  0};
+
+            for (int layer = 0; layer < 3; layer++) {
+                double r = (3 - layer) * 2.5;
+                double oy = layer * height / 3.0;
+                g.setColor(new Color(reds[layer], greens[layer], blues[layer], alphas[layer]));
+                g.fillOval((int)(fx - r), (int)(fy - oy - r), (int)(r * 2), (int)(r * 2));
+            }
+        }
+    }
+
+    /** Dessine un crâne simplifié (cercle + yeux + mâchoire). */
+    private void drawSkull(Graphics2D g, double cx, double cy) {
+        // Crâne (cercle blanc)
+        g.setColor(new Color(230, 230, 230, 200));
+        g.fillOval((int)(cx - 7), (int)(cy - 9), 14, 13);
+
+        // Yeux (rouges lumineux)
+        g.setColor(new Color(255, 30, 30, 240));
+        g.fillOval((int)(cx - 5), (int)(cy - 8), 4, 4);
+        g.fillOval((int)(cx + 1), (int)(cy - 8), 4, 4);
+
+        // Mâchoire (traits noirs)
+        g.setColor(new Color(20, 10, 30));
+        g.setStroke(new BasicStroke(1f));
+        for (int i = -2; i <= 2; i++) {
+            g.drawLine((int)(cx + i * 2), (int)(cy + 2), (int)(cx + i * 2), (int)(cy + 5));
+        }
+    }
+
+    /** Dessine des étincelles qui orbitent autour du robot. */
+    private void drawSparks(Graphics2D g, double cx, double cy, int t) {
+        int numSparks = 5;
+        for (int i = 0; i < numSparks; i++) {
+            double angle = Math.toRadians(t * 4.0 + i * (360.0 / numSparks));
+            double dist  = 25 + Math.sin(t * 0.07 + i) * 5;
+            double sx = cx + Math.cos(angle) * dist;
+            double sy = cy + Math.sin(angle) * dist;
+
+            // Couleur cyclique cyan → magenta
+            float hue = (hueShift + i / (float) numSparks) % 1.0f;
+            Color sparkColor = Color.getHSBColor(hue, 1f, 1f);
+            g.setColor(new Color(sparkColor.getRed(), sparkColor.getGreen(), sparkColor.getBlue(), 200));
+            g.fillOval((int)(sx - 3), (int)(sy - 3), 6, 6);
+
+            // Traîne lumineuse
+            g.setColor(new Color(sparkColor.getRed(), sparkColor.getGreen(), sparkColor.getBlue(), 80));
+            double prevAngle = angle - 0.3;
+            double px = cx + Math.cos(prevAngle) * dist;
+            double py = cy + Math.sin(prevAngle) * dist;
+            g.setStroke(new BasicStroke(1.5f));
+            g.drawLine((int)px, (int)py, (int)sx, (int)sy);
+        }
+    }
+
+    /** Génère un polygone hexagonal centré en (cx, cy). */
+    private Polygon makeHexagon(double cx, double cy, int radius) {
+        Polygon p = new Polygon();
+        for (int i = 0; i < 6; i++) {
+            double angle = Math.toRadians(60 * i - 30);
+            p.addPoint((int)(cx + radius * Math.cos(angle)),
+                       (int)(cy + radius * Math.sin(angle)));
+        }
+        return p;
+    }
+
+    @Override
+    public void onRobotDeath(RobotDeathEvent e) {
+        enemies.remove(e.getName());
+        target = null;
+        selectTarget();
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  SÉLECTION DE CIBLE
+    //  Priorité : ennemi le plus faible ET le plus proche (danger score)
+    // ──────────────────────────────────────────────────────────────────────────
+    private void selectTarget() {
+        if (enemies.isEmpty()) { target = null; return; }
+
+        EnemyData best = null;
+        double    bestScore = Double.MAX_VALUE;
+
+        for (EnemyData ed : enemies.values()) {
+            // Score = distance / (100 - énergie + 1) → favorise faible énergie + proche
+            double score = ed.distance / (101.0 - ed.energy);
+            if (best == null || score < bestScore) {
+                best      = ed;
+                bestScore = score;
+            }
+        }
+        target = best;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  CLASSE INTERNE : Données d'un ennemi
+    // ──────────────────────────────────────────────────────────────────────────
+    private static class EnemyData {
+        final String name;
+        double bearing;
+        double distance;
+        double heading;
+        double velocity;
+        double energy;
+        double absX;
+        double absY;
+        long   lastSeen;
+
+        // Historique de positions pour détecter le pattern de mouvement
+        List<double[]> history = new ArrayList<>();
+
+        EnemyData(String name) { this.name = name; }
+
+        void update(ScannedRobotEvent e, AdvancedRobot me) {
+            bearing  = e.getBearing();
+            distance = e.getDistance();
+            heading  = e.getHeading();
+            velocity = e.getVelocity();
+            energy   = e.getEnergy();
+            lastSeen = me.getTime();
+
+            // Calculer la position absolue
+            double absAngle = Math.toRadians(me.getHeading() + bearing);
+            absX = me.getX() + Math.sin(absAngle) * distance;
+            absY = me.getY() + Math.cos(absAngle) * distance;
+
+            history.add(new double[]{absX, absY, heading, velocity, me.getTime()});
+            if (history.size() > HISTORY_SIZE) history.remove(0);
+        }
+    }
+}
