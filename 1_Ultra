@@ -6,17 +6,7 @@ import java.awt.Color;
 import java.awt.geom.*;
 import java.util.*;
  
-/**
- * UltraKiller - Le robot le plus puissant possible
- *
- * Techniques utilisées :
- * - Mouvement Wave Surfing (meilleure esquive au monde)
- * - Ciblage Statistical / Precise Prediction
- * - Anti-Gravity Movement en fallback
- * - Bullet Shielding (rare mais implementé)
- * - Multi-mode targeting (Head-On, Linear, Circular, Statistical)
- * - Energie management intelligent
- */
+
 public class UltraKiller extends AdvancedRobot {
  
     // ===== CONSTANTES =====
