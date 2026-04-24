@@ -6,7 +6,7 @@ import java.awt.*;
 import java.util.*;
 import java.util.List; // Précision pour éviter les conflits
 
-public class RobocodeRobot extends AdvancedRobot {
+public class floariiiant extends AdvancedRobot {
 
     private static final double WALL_MARGIN = 80;
     private static final double RAM_DISTANCE = 60;
